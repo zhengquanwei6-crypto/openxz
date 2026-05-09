@@ -1,0 +1,74 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Upload to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          source: "dist/,server/,package.json,package-lock.json,public/"
+          target: /opt/persona-chat
+          overwrite: true
+
+      - name: Deploy on VPS
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          script: |
+            set -e
+            cd /opt/persona-chat
+            npm install --production --ignore-scripts || true
+            npm rebuild better-sqlite3 || npm install better-sqlite3
+            
+            if [ ! -f /etc/systemd/system/persona-chat.service ]; then
+              cat > /etc/systemd/system/persona-chat.service << 'UNIT'
+            [Unit]
+            Description=Persona Chat API
+            After=network.target
+            [Service]
+            Type=simple
+            WorkingDirectory=/opt/persona-chat
+            ExecStart=/usr/bin/node server/index.mjs
+            Restart=on-failure
+            RestartSec=5
+            Environment=NODE_ENV=production
+            Environment=PORT=8088
+            [Install]
+            WantedBy=multi-user.target
+            UNIT
+              systemctl daemon-reload
+              systemctl enable persona-chat
+            fi
+            
+            systemctl restart persona-chat
+            sleep 3
+            curl -sf http://localhost:8088/api/health && echo " Deploy OK"
