@@ -1,10 +1,14 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { Search } from "lucide-react";
+import { Search, Compass } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { api } from "../lib/api";
 import { useAuth } from "../contexts/AuthContext";
+import { useToast } from "../components/ui/Toast";
 import { CharacterCard } from "../components/discover/CharacterCard";
+import { CharacterListSkeleton } from "../components/ui/Skeleton";
+import { EmptyState } from "../components/ui/EmptyState";
+import { PullToRefresh } from "../components/ui/PullToRefresh";
 
 interface Character {
   id: string;
@@ -20,19 +24,23 @@ interface Character {
 export function DiscoverPage() {
   const { token } = useAuth();
   const navigate = useNavigate();
+  const { toast } = useToast();
   const [characters, setCharacters] = useState<Character[]>([]);
   const [keyword, setKeyword] = useState("");
   const [activeTag, setActiveTag] = useState("全部");
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    setLoading(true);
+  const fetchCharacters = async () => {
     const params = new URLSearchParams();
     if (keyword) params.set("keyword", keyword);
     if (activeTag !== "全部") params.set("tag", activeTag);
-    api<Character[]>(`/api/characters?${params}`, { token })
-      .then(setCharacters)
-      .finally(() => setLoading(false));
+    const data = await api<Character[]>(`/api/characters?${params}`, { token });
+    setCharacters(data);
+  };
+
+  useEffect(() => {
+    setLoading(true);
+    fetchCharacters().finally(() => setLoading(false));
   }, [keyword, activeTag, token]);
 
   const allTags = ["全部", ...new Set(characters.flatMap((c) => c.tags))];
@@ -46,6 +54,8 @@ export function DiscoverPage() {
     setCharacters((prev) =>
       prev.map((c) => (c.id === id ? { ...c, isFavorite: !c.isFavorite } : c))
     );
+    const char = characters.find((c) => c.id === id);
+    toast(char?.isFavorite ? "已取消收藏" : "已收藏", "success");
   };
 
   return (
@@ -82,12 +92,16 @@ export function DiscoverPage() {
         </div>
       </div>
 
-      {/* Character List */}
-      <div className="flex-1 overflow-y-auto px-4 pb-4">
+      {/* Character List with Pull to Refresh */}
+      <PullToRefresh onRefresh={fetchCharacters} className="flex-1 overflow-y-auto px-4 pb-4">
         {loading ? (
-          <div className="flex items-center justify-center py-12">
-            <div className="w-6 h-6 border-2 border-teal-400 border-t-transparent rounded-full animate-spin" />
-          </div>
+          <CharacterListSkeleton />
+        ) : characters.length === 0 ? (
+          <EmptyState
+            icon={<Compass className="w-6 h-6" />}
+            title="没有找到角色"
+            description={keyword ? "换个关键词试试" : "角色正在准备中，稍后再来"}
+          />
         ) : (
           <AnimatePresence>
             <div className="flex flex-col gap-3 mt-2">
@@ -108,10 +122,7 @@ export function DiscoverPage() {
             </div>
           </AnimatePresence>
         )}
-        {!loading && characters.length === 0 && (
-          <p className="text-center text-slate-500 py-12 text-sm">没有找到角色</p>
-        )}
-      </div>
+      </PullToRefresh>
     </div>
   );
 }

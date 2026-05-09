@@ -1,8 +1,12 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "motion/react";
+import { MessageCircle } from "lucide-react";
 import { api } from "../lib/api";
 import { useAuth } from "../contexts/AuthContext";
+import { ChatListSkeleton } from "../components/ui/Skeleton";
+import { EmptyState } from "../components/ui/EmptyState";
+import { PullToRefresh } from "../components/ui/PullToRefresh";
 
 interface Conversation {
   id: string;
@@ -19,19 +23,17 @@ export function ChatListPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const fetchConversations = async () => {
+    const data = await api<Conversation[]>("/api/conversations", { token });
+    setConversations(data);
+  };
+
   useEffect(() => {
-    api<Conversation[]>("/api/conversations", { token })
-      .then(setConversations)
-      .finally(() => setLoading(false));
+    setLoading(true);
+    fetchConversations().finally(() => setLoading(false));
   }, [token]);
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <div className="w-6 h-6 border-2 border-teal-400 border-t-transparent rounded-full animate-spin" />
-      </div>
-    );
-  }
+  if (loading) return <ChatListSkeleton />;
 
   return (
     <div className="flex flex-col h-full">
@@ -39,17 +41,21 @@ export function ChatListPage() {
         <h1 className="text-xl font-bold text-slate-100">聊天</h1>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4">
+      <PullToRefresh onRefresh={fetchConversations} className="flex-1 overflow-y-auto px-4">
         {conversations.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 text-center">
-            <p className="text-slate-500 text-sm">还没有聊天记录</p>
-            <button
-              onClick={() => navigate("/discover")}
-              className="mt-3 text-teal-400 text-sm font-medium hover:text-teal-300"
-            >
-              去发现角色
-            </button>
-          </div>
+          <EmptyState
+            icon={<MessageCircle className="w-6 h-6" />}
+            title="还没有聊天记录"
+            description="去发现页找一个有趣的角色聊聊吧"
+            action={
+              <button
+                onClick={() => navigate("/discover")}
+                className="px-4 py-2 rounded-lg bg-teal-600 text-white text-sm font-medium hover:bg-teal-500 transition-colors"
+              >
+                去发现角色
+              </button>
+            }
+          />
         ) : (
           <div className="flex flex-col gap-1">
             {conversations.map((conv, i) => (
@@ -59,7 +65,7 @@ export function ChatListPage() {
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ delay: i * 0.03 }}
                 onClick={() => navigate(`/chat/${conv.id}`)}
-                className="flex items-center gap-3 p-3 rounded-xl hover:bg-slate-800/50 cursor-pointer transition-colors"
+                className="flex items-center gap-3 p-3 rounded-xl hover:bg-slate-800/50 cursor-pointer transition-colors active:scale-[0.98]"
               >
                 <div className="w-11 h-11 rounded-full bg-slate-700 flex items-center justify-center text-sm font-medium text-slate-300 flex-shrink-0">
                   {conv.title[0]}
@@ -77,7 +83,7 @@ export function ChatListPage() {
             ))}
           </div>
         )}
-      </div>
+      </PullToRefresh>
     </div>
   );
 }

@@ -8,7 +8,7 @@
  *   app.post("/api/conversations/:id/messages", requireAuth, quotaCheck("message"), ...)
  */
 import { eq, and } from "drizzle-orm";
-import { db } from "../db/index.mjs";
+import { db, sqlite } from "../db/index.mjs";
 import * as schema from "../db/schema.mjs";
 
 // --- Plan limits ---
@@ -39,40 +39,23 @@ function getUserPlan(userId) {
 
 function countTodayMessages(userId) {
   const today = new Date().toISOString().slice(0, 10);
-  const userConvs = db.select({ id: schema.conversations.id })
-    .from(schema.conversations)
-    .where(eq(schema.conversations.userId, userId))
-    .all();
-
-  if (userConvs.length === 0) return 0;
-
-  const convIds = userConvs.map((c) => c.id);
-  // Use raw SQL for IN clause efficiency
-  const placeholders = convIds.map(() => "?").join(",");
-  const stmt = db.run
-    ? null
-    : null;
-
-  // Fallback: iterate (for SQLite with Drizzle)
-  let count = 0;
-  for (const convId of convIds) {
-    const msgs = db.select().from(schema.messages)
-      .where(and(
-        eq(schema.messages.conversationId, convId),
-        eq(schema.messages.role, "user"),
-      ))
-      .all();
-    count += msgs.filter((m) => m.createdAt?.startsWith(today)).length;
-  }
-  return count;
+  // Use efficient SQL with LIKE on created_at index
+  const result = sqlite.prepare(`
+    SELECT COUNT(*) as count FROM messages
+    WHERE conversation_id IN (SELECT id FROM conversations WHERE user_id = ?)
+    AND role = 'user'
+    AND created_at LIKE ?
+  `).get(userId, `${today}%`);
+  return result?.count ?? 0;
 }
 
 function countTodayImages(userId) {
   const today = new Date().toISOString().slice(0, 10);
-  const jobs = db.select().from(schema.imageJobs)
-    .where(eq(schema.imageJobs.userId, userId))
-    .all();
-  return jobs.filter((j) => j.createdAt?.startsWith(today)).length;
+  const result = sqlite.prepare(`
+    SELECT COUNT(*) as count FROM image_jobs
+    WHERE user_id = ? AND created_at LIKE ?
+  `).get(userId, `${today}%`);
+  return result?.count ?? 0;
 }
 
 /**

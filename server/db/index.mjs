@@ -212,6 +212,65 @@ export function initializeDatabase() {
   `);
 
   console.log(`[Database] SQLite initialized at ${DB_PATH}`);
+
+  // Seed default characters if table is empty
+  seedDefaultData();
+}
+
+function seedDefaultData() {
+  const charCount = sqlite.prepare("SELECT COUNT(*) as count FROM characters").get();
+  if (charCount.count > 0) return; // Already seeded
+
+  const now = new Date().toISOString();
+  const seedChars = [
+    {
+      id: "c-1", name: "林知夏",
+      avatar: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&q=80&w=320&h=320",
+      cover: "https://images.unsplash.com/photo-1493246507139-91e8fad9978e?auto=format&fit=crop&q=80&w=1200",
+      short_bio: "温柔敏锐的城市观察者，擅长把日常聊成一封慢慢展开的信。",
+      profile: "林知夏曾做过电台编辑，习惯倾听细节。她会记住用户表达过的偏好，用轻松、温和、有边界的方式回应。",
+      personality: "温柔、细腻、幽默感很轻，擅长共情和追问。",
+      speaking_style: "短句为主，像熟悉的朋友聊天，偶尔用一点画面感描述。",
+      relationship: "刚认识但愿意认真倾听的朋友",
+      world_setting: "近未来城市，夜间电台仍然陪伴很多睡不着的人。",
+      scenario: "你在深夜打开了她的私人频道，她正好在整理一段未播出的来信。",
+      first_message: "你来得正好。我刚泡了一杯热茶，今晚想听听你的故事。今天过得怎么样？",
+      example_dialogs: JSON.stringify(["用户：我今天有点累。知夏：那我们先不急着解决问题，先把这口气慢慢放下来。"]),
+      tags: JSON.stringify(["陪伴", "治愈", "日常"]),
+      visibility: "public", status: "published", is_recommended: 1,
+      interaction_count: 32680, theme_color: "#0f766e", online_text: "刚刚在整理来信",
+      fixed_memories: JSON.stringify(["她经营一档夜间电台", "她喜欢用茶和天气开启话题"]),
+      workflow_config: "{}", relationship_config: "{}",
+      created_at: now, updated_at: now,
+    },
+    {
+      id: "c-2", name: "顾野",
+      avatar: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&q=80&w=320&h=320",
+      cover: "https://images.unsplash.com/photo-1519608487953-e999c86e7455?auto=format&fit=crop&q=80&w=1200",
+      short_bio: "赛博都市里的冷静调查员，适合剧情推理、任务陪跑和沉浸式对话。",
+      profile: "顾野是边境城市的私人调查员，逻辑强、行动克制。他会把用户当成搭档，一起拆解线索。",
+      personality: "冷静、可靠、行动派，偶尔有干涩的幽默。",
+      speaking_style: "简洁、判断明确，会主动给出下一步行动选项。",
+      relationship: "临时搭档",
+      world_setting: "霓虹和雨水覆盖的边境城市，信息比货币更昂贵。",
+      scenario: "你们在一间旧档案室里发现了一份被删除的委托记录。",
+      first_message: "门外有人跟踪你。别回头，把这份文件收好，我们从后门走。",
+      example_dialogs: JSON.stringify(["用户：现在怎么办？顾野：先确认出口，再确认谁想让我们留在这里。"]),
+      tags: JSON.stringify(["剧情", "推理", "赛博"]),
+      visibility: "public", status: "published", is_recommended: 1,
+      interaction_count: 18900, theme_color: "#334155", online_text: "正在检查线索",
+      fixed_memories: JSON.stringify(["顾野习惯先确认出口", "他把用户称为搭档"]),
+      workflow_config: "{}", relationship_config: "{}",
+      created_at: now, updated_at: now,
+    },
+  ];
+
+  const insertChar = sqlite.prepare(`INSERT OR IGNORE INTO characters (id, name, avatar, cover, short_bio, profile, personality, speaking_style, relationship, world_setting, scenario, first_message, example_dialogs, tags, visibility, status, is_recommended, interaction_count, theme_color, online_text, fixed_memories, workflow_config, relationship_config, created_at, updated_at) VALUES (@id, @name, @avatar, @cover, @short_bio, @profile, @personality, @speaking_style, @relationship, @world_setting, @scenario, @first_message, @example_dialogs, @tags, @visibility, @status, @is_recommended, @interaction_count, @theme_color, @online_text, @fixed_memories, @workflow_config, @relationship_config, @created_at, @updated_at)`);
+
+  for (const char of seedChars) {
+    insertChar.run(char);
+  }
+  console.log(`[Database] Seeded ${seedChars.length} default characters`);
 }
 
 // Graceful close

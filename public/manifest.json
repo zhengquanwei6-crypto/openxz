@@ -1,0 +1,14 @@
+{
+  "name": "Persona Chat",
+  "short_name": "Persona",
+  "description": "AI 角色聊天，遇见属于你的虚拟陪伴",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "orientation": "portrait",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "/favicon.svg", "type": "image/svg+xml", "sizes": "any" }
+  ]
+}

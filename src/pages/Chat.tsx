@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, MoreVertical, RefreshCw, Copy, Bookmark, Heart } from "lucide-react";
-import { api, streamMessages, type StreamChunk } from "../lib/api";
+import { ArrowLeft, RefreshCw, Copy, Bookmark, Heart, Crown } from "lucide-react";
+import { api, ApiError, streamMessages } from "../lib/api";
 import { useAuth } from "../contexts/AuthContext";
+import { useToast } from "../components/ui/Toast";
 import { ChatBubble } from "../components/chat/ChatBubble";
 import { ChatInput } from "../components/chat/ChatInput";
+import { MessagesSkeleton } from "../components/ui/Skeleton";
 
 interface Message {
   id: string;
@@ -23,6 +25,7 @@ export function ChatPage() {
   const { conversationId } = useParams<{ conversationId: string }>();
   const { token } = useAuth();
   const navigate = useNavigate();
+  const { toast } = useToast();
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -31,6 +34,7 @@ export function ChatPage() {
   const [streamingContent, setStreamingContent] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [quotaExceeded, setQuotaExceeded] = useState(false);
 
   // Load messages
   useEffect(() => {
@@ -86,8 +90,18 @@ export function ChatPage() {
       }
     } catch (err: any) {
       if (err.name !== "AbortError") {
-        const errorMsg: Message = { id: `err-${Date.now()}`, role: "assistant", content: "网络连接中断，请重试。", status: "failed" };
-        setMessages((prev) => [...prev, errorMsg]);
+        // Handle quota exceeded (429)
+        if (err instanceof ApiError && err.status === 429) {
+          setQuotaExceeded(true);
+          const data = err.data as any;
+          toast(data?.error || "今日额度已用完", "error");
+          // Remove the optimistic user message
+          setMessages((prev) => prev.filter((m) => m.id !== tempUserMsg.id));
+        } else {
+          const errorMsg: Message = { id: `err-${Date.now()}`, role: "assistant", content: "网络连接中断，请重试。", status: "failed" };
+          setMessages((prev) => [...prev, errorMsg]);
+          toast("发送失败，请检查网络", "error");
+        }
       }
     } finally {
       setIsStreaming(false);
@@ -102,8 +116,12 @@ export function ChatPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-full">
-        <div className="w-6 h-6 border-2 border-teal-400 border-t-transparent rounded-full animate-spin" />
+      <div className="flex flex-col h-full bg-slate-950">
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-slate-800 pt-[max(12px,var(--sat))]">
+          <button onClick={() => navigate("/chats")} className="p-1 text-slate-400"><ArrowLeft className="w-5 h-5" /></button>
+          <div className="flex-1"><div className="h-4 w-20 bg-slate-800 rounded animate-pulse" /></div>
+        </div>
+        <MessagesSkeleton />
       </div>
     );
   }
@@ -132,7 +150,7 @@ export function ChatPage() {
             {msg.role === "assistant" && !isStreaming && (
               <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 px-12 py-1">
                 <button
-                  onClick={() => { navigator.clipboard.writeText(msg.content); }}
+                  onClick={() => { navigator.clipboard.writeText(msg.content); toast("已复制到剪贴板", "success"); }}
                   className="p-1 rounded text-slate-600 hover:text-slate-300 hover:bg-slate-800"
                   title="复制"
                 >
@@ -141,6 +159,7 @@ export function ChatPage() {
                 <button
                   onClick={async () => {
                     await api("/api/memories", { method: "POST", body: { content: msg.content, type: "conversation", characterId: conversation?.characterId }, token });
+                    toast("已保存为记忆", "success");
                   }}
                   className="p-1 rounded text-slate-600 hover:text-teal-400 hover:bg-slate-800"
                   title="保存为记忆"
@@ -172,8 +191,22 @@ export function ChatPage() {
         )}
       </div>
 
+      {/* Quota Exceeded Banner */}
+      {quotaExceeded && (
+        <div className="flex items-center gap-2 px-4 py-2.5 bg-amber-950/50 border-t border-amber-800/30">
+          <Crown className="w-4 h-4 text-amber-400 flex-shrink-0" />
+          <p className="text-xs text-amber-200 flex-1">今日免费额度已用完</p>
+          <button
+            onClick={() => navigate("/subscription")}
+            className="px-3 py-1 rounded-lg bg-amber-600 text-white text-xs font-medium hover:bg-amber-500 transition-colors"
+          >
+            升级
+          </button>
+        </div>
+      )}
+
       {/* Input */}
-      <ChatInput onSend={handleSend} onStop={handleStop} isStreaming={isStreaming} />
+      <ChatInput onSend={handleSend} onStop={handleStop} isStreaming={isStreaming} disabled={quotaExceeded} />
     </div>
   );
 }
