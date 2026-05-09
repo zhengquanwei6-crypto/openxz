@@ -5,7 +5,7 @@ import { requireAuth } from "../middleware/auth.mjs";
 import { llmLimiter } from "../middleware/rateLimiter.mjs";
 import { readStore, updateStore } from "../store/index.mjs";
 import { addRelationshipGrowth, ensureRelationshipState, publicRelationshipState } from "../services/relationship.mjs";
-import { callLlm, getRuntimeModelConfig, shouldBlockLocalLlmFallback, normalizeAssistantReply, isAbortError } from "../services/llm.mjs";
+import { callLlm, callLlmStream, getRuntimeModelConfig, shouldBlockLocalLlmFallback, normalizeAssistantReply, isAbortError } from "../services/llm.mjs";
 import { isPublicCharacter } from "./characters.mjs";
 import { ensurePersona } from "./auth.mjs";
 import { timestamp } from "../utils/helpers.mjs";
@@ -154,6 +154,10 @@ conversationsRouter.post("/:id/messages", requireAuth, llmLimiter, async (req, r
 
 conversationsRouter.post("/:id/messages/stream", requireAuth, llmLimiter, async (req, res) => {
   const body = z.object({ content: z.string().min(1).max(4000) }).parse(req.body);
+  const clientAbort = new AbortController();
+  req.on("aborted", () => clientAbort.abort());
+  res.on("close", () => { if (!res.writableEnded) clientAbort.abort(); });
+
   const data = await readStore();
   const conversation = getOwnedPublicConversation(data, req.params.id, req.auth.sub);
   if (!conversation) return res.status(404).json({ error: "会话不存在" });
@@ -161,30 +165,79 @@ conversationsRouter.post("/:id/messages/stream", requireAuth, llmLimiter, async 
   const persona = ensurePersona(data, req.auth.sub);
   const history = data.messages[conversation.id] ?? [];
   const relationshipState = addRelationshipGrowth(data, { userId: req.auth.sub, characterId: character.id, points: RELATIONSHIP_GROWTH.message, type: "daily_chat" }) ?? ensureRelationshipState(data, req.auth.sub, character.id);
-  const replyResult = await callLlm({ character, persona, memories: data.memories.filter((memory) => memory.userId === req.auth.sub), messages: history, userText: body.content, runtimeModelConfig: getRuntimeModelConfig(data), relationshipState });
-  if (shouldBlockLocalLlmFallback(replyResult)) {
-    return res.status(503).json({ error: "真实 LLM 未返回结果，已阻止使用本地兜底。", source: replyResult.source, fallbackReason: replyResult.fallbackReason });
-  }
-  const reply = replyResult.content;
-  const now = new Date().toISOString();
-  const userMessage = { id: `msg-${nanoid(8)}`, conversationId: conversation.id, role: "user", content: body.content, status: "success", createdAt: now };
-  const assistantMessage = { id: `msg-${nanoid(8)}`, conversationId: conversation.id, role: "assistant", content: reply, status: "success", createdAt: new Date().toISOString() };
-  await updateStore((nextData) => {
-    const nextConversation = getOwnedPublicConversation(nextData, req.params.id, req.auth.sub);
-    if (!nextConversation) return null;
-    nextData.messages[nextConversation.id] = [...(nextData.messages[nextConversation.id] ?? []), userMessage, assistantMessage];
-    nextConversation.lastMessage = assistantMessage.content;
-    nextConversation.updatedAt = assistantMessage.createdAt;
-    addRelationshipGrowth(nextData, { userId: req.auth.sub, characterId: character.id, points: RELATIONSHIP_GROWTH.message, type: "daily_chat" });
-    return assistantMessage;
-  });
+
+  // Set SSE headers before streaming
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache");
-  for (const chunk of reply.match(/.{1,12}/gu) ?? [reply]) {
-    res.write(`data: ${JSON.stringify({ delta: chunk })}\n\n`);
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no"); // Disable Nginx buffering
+  res.flushHeaders();
+
+  let fullContent = "";
+  let source = "local";
+  let model = undefined;
+  let fallbackReason = undefined;
+
+  try {
+    const streamGen = callLlmStream({
+      character,
+      persona,
+      memories: data.memories.filter((memory) => memory.userId === req.auth.sub),
+      messages: history,
+      userText: body.content,
+      runtimeModelConfig: getRuntimeModelConfig(data),
+      relationshipState,
+      signal: clientAbort.signal,
+    });
+
+    for await (const chunk of streamGen) {
+      if (clientAbort.signal.aborted) return;
+      if (chunk.delta) {
+        res.write(`data: ${JSON.stringify({ delta: chunk.delta })}\n\n`);
+      }
+      if (chunk.done) {
+        fullContent = chunk.content;
+        source = chunk.source;
+        model = chunk.model;
+        fallbackReason = chunk.fallbackReason;
+      }
+    }
+  } catch (error) {
+    if (isAbortError(error)) return;
+    // On error, send error event and close
+    res.write(`data: ${JSON.stringify({ error: "流式生成中断", done: true })}\n\n`);
+    res.end();
+    return;
   }
-  res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+
+  if (clientAbort.signal.aborted) return;
+
+  // Check fail-closed policy
+  if (shouldBlockLocalLlmFallback({ source })) {
+    res.write(`data: ${JSON.stringify({ error: "真实 LLM 未返回结果", done: true, source, fallbackReason })}\n\n`);
+    res.end();
+    return;
+  }
+
+  // Send done event
+  res.write(`data: ${JSON.stringify({ done: true, source, model })}\n\n`);
   res.end();
+
+  // Persist messages asynchronously after stream completes
+  if (fullContent) {
+    const now = new Date().toISOString();
+    const userMessage = { id: `msg-${nanoid(8)}`, conversationId: conversation.id, role: "user", content: body.content, status: "success", createdAt: now };
+    const assistantMessage = { id: `msg-${nanoid(8)}`, conversationId: conversation.id, role: "assistant", content: fullContent, status: "success", createdAt: new Date().toISOString() };
+    await updateStore((nextData) => {
+      const nextConversation = getOwnedPublicConversation(nextData, req.params.id, req.auth.sub);
+      if (!nextConversation) return null;
+      nextData.messages[nextConversation.id] = [...(nextData.messages[nextConversation.id] ?? []), userMessage, assistantMessage];
+      nextConversation.lastMessage = assistantMessage.content;
+      nextConversation.updatedAt = assistantMessage.createdAt;
+      addRelationshipGrowth(nextData, { userId: req.auth.sub, characterId: character.id, points: RELATIONSHIP_GROWTH.message, type: "daily_chat" });
+      return assistantMessage;
+    }).catch((err) => console.error("Failed to persist stream messages:", err));
+  }
 });
 
 conversationsRouter.delete("/:id/messages/:messageId", requireAuth, async (req, res) => {

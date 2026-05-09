@@ -102,10 +102,33 @@ adminRouter.get("/characters", async (_req, res) => {
 });
 
 adminRouter.post("/characters", async (req, res) => {
-  const character = req.body;
+  const body = z.object({
+    id: z.string().max(64).optional(),
+    name: z.string().min(1).max(48),
+    avatar: z.string().url().max(500).optional().default(""),
+    cover: z.string().url().max(500).optional().default(""),
+    shortBio: z.string().max(200).optional().default(""),
+    profile: z.string().max(2000).optional().default(""),
+    personality: z.string().max(500).optional().default(""),
+    speakingStyle: z.string().max(500).optional().default(""),
+    relationship: z.string().max(200).optional().default(""),
+    worldSetting: z.string().max(1000).optional().default(""),
+    scenario: z.string().max(1000).optional().default(""),
+    firstMessage: z.string().max(2000).optional().default(""),
+    exampleDialogs: z.array(z.string().max(500)).max(10).optional().default([]),
+    tags: z.array(z.string().max(30)).max(10).optional().default([]),
+    visibility: z.enum(["public", "private"]).optional().default("private"),
+    isRecommended: z.boolean().optional().default(false),
+    themeColor: z.string().max(20).optional().default("#0f766e"),
+    onlineText: z.string().max(60).optional().default(""),
+    fixedMemories: z.array(z.string().max(200)).max(10).optional().default([]),
+    interactionCount: z.number().int().min(0).optional().default(0),
+    workflowConfig: z.record(z.string(), z.unknown()).optional(),
+    relationshipConfig: z.record(z.string(), z.unknown()).optional(),
+  }).parse(req.body ?? {});
   const result = await updateStore((data) => {
     const presets = ensureWorkflowPresetState(data);
-    const next = { ...character, id: character.id || `c-${nanoid(8)}` };
+    const next = { ...body, id: body.id || `c-${nanoid(8)}` };
     const sanitized = sanitizeCharacterRecord(next, presets);
     data.characters.unshift(sanitized);
     appendAdminOperationLog(data, { action: "character.create", targetType: "character", targetId: sanitized.id, summary: `创建角色 ${sanitized.name}。` });
@@ -115,11 +138,35 @@ adminRouter.post("/characters", async (req, res) => {
 });
 
 adminRouter.put("/characters/:id", async (req, res) => {
+  const body = z.object({
+    name: z.string().min(1).max(48).optional(),
+    avatar: z.string().url().max(500).optional(),
+    cover: z.string().url().max(500).optional(),
+    shortBio: z.string().max(200).optional(),
+    profile: z.string().max(2000).optional(),
+    personality: z.string().max(500).optional(),
+    speakingStyle: z.string().max(500).optional(),
+    relationship: z.string().max(200).optional(),
+    worldSetting: z.string().max(1000).optional(),
+    scenario: z.string().max(1000).optional(),
+    firstMessage: z.string().max(2000).optional(),
+    exampleDialogs: z.array(z.string().max(500)).max(10).optional(),
+    tags: z.array(z.string().max(30)).max(10).optional(),
+    visibility: z.enum(["public", "private"]).optional(),
+    status: z.enum(["draft", "published", "archived"]).optional(),
+    isRecommended: z.boolean().optional(),
+    themeColor: z.string().max(20).optional(),
+    onlineText: z.string().max(60).optional(),
+    fixedMemories: z.array(z.string().max(200)).max(10).optional(),
+    interactionCount: z.number().int().min(0).optional(),
+    workflowConfig: z.record(z.string(), z.unknown()).optional(),
+    relationshipConfig: z.record(z.string(), z.unknown()).optional(),
+  }).parse(req.body ?? {});
   const result = await updateStore((data) => {
     const presets = ensureWorkflowPresetState(data);
     const index = data.characters.findIndex((item) => item.id === req.params.id);
     if (index < 0) return null;
-    const next = { ...data.characters[index], ...req.body, id: req.params.id };
+    const next = { ...data.characters[index], ...body, id: req.params.id };
     data.characters[index] = sanitizeCharacterRecord(next, presets);
     appendAdminOperationLog(data, { action: "character.update", targetType: "character", targetId: req.params.id, summary: `更新角色 ${data.characters[index].name}。` });
     return data.characters[index];

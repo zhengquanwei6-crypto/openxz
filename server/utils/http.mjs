@@ -44,6 +44,55 @@ function createNodeResponse(statusCode, headers, bodyText) {
   };
 }
 
+/**
+ * Make a streaming POST request that returns the raw response stream.
+ * Used for real-time SSE forwarding from LLM APIs.
+ */
+export function postJsonStream(url, { headers = {}, body, timeoutMs, signal } = {}) {
+  const targetUrl = new URL(url);
+  const proxyUrl = getProxyUrl(targetUrl);
+  const bodyText = JSON.stringify(body ?? {});
+  const requestHeaders = {
+    "Content-Type": "application/json",
+    "Content-Length": Buffer.byteLength(bodyText),
+    ...headers,
+  };
+  const useHttpProxy = proxyUrl && targetUrl.protocol === "http:";
+  const requestUrl = useHttpProxy ? proxyUrl : targetUrl;
+  const transport = requestUrl.protocol === "https:" ? https : http;
+  const options = {
+    method: "POST",
+    hostname: requestUrl.hostname,
+    port: requestUrl.port || (requestUrl.protocol === "https:" ? 443 : 80),
+    path: useHttpProxy ? targetUrl.href : `${targetUrl.pathname}${targetUrl.search}`,
+    headers: useHttpProxy ? { Host: targetUrl.host, ...requestHeaders } : requestHeaders,
+  };
+
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(createRequestAbortError());
+      return;
+    }
+    const req = transport.request(options, (response) => {
+      if (response.statusCode >= 300) {
+        const chunks = [];
+        response.on("data", (chunk) => chunks.push(chunk));
+        response.on("end", () => {
+          reject(new Error(`LLM stream request failed: HTTP ${response.statusCode} ${Buffer.concat(chunks).toString("utf8").slice(0, 200)}`));
+        });
+        return;
+      }
+      resolve(response);
+    });
+    const abort = () => req.destroy(createRequestAbortError());
+    signal?.addEventListener("abort", abort, { once: true });
+    req.setTimeout(timeoutMs, () => req.destroy(createRequestAbortError()));
+    req.on("error", (error) => reject(error));
+    req.on("close", () => signal?.removeEventListener("abort", abort));
+    req.end(bodyText);
+  });
+}
+
 export function postJson(url, { headers = {}, body, timeoutMs, signal } = {}) {
   const targetUrl = new URL(url);
   const proxyUrl = getProxyUrl(targetUrl);

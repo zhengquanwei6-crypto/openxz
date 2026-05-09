@@ -1,6 +1,6 @@
 import { config } from "../config.mjs";
 import { decryptSecret } from "../utils/crypto.mjs";
-import { postJson, createRequestAbortError, isAbortError } from "../utils/http.mjs";
+import { postJson, postJsonStream, createRequestAbortError, isAbortError } from "../utils/http.mjs";
 import { relationshipPromptContext } from "./relationship.mjs";
 
 export { isAbortError, createRequestAbortError };
@@ -187,4 +187,109 @@ export async function callAdminAiJson({ data, systemPrompt, userPrompt, temperat
     source: "llm",
     model: runtime.modelName,
   };
+}
+
+
+/**
+ * Real streaming LLM call that yields chunks as they arrive from the upstream LLM.
+ * Returns an async generator that yields { delta, done, content, source, model } objects.
+ *
+ * Falls back to non-streaming callLlm() if:
+ * - LLM is not enabled/configured
+ * - The upstream doesn't support streaming
+ */
+export async function* callLlmStream({ character, persona, memories, messages, userText, runtimeModelConfig, relationshipState, signal }) {
+  const runtime = runtimeModelConfig ?? getRuntimeModelConfig();
+
+  // Pre-flight checks — fall back to local reply
+  if (!config.llmEnabled) {
+    yield { delta: localReply(character, userText), done: true, content: localReply(character, userText), source: "local", fallbackReason: "LLM_ENABLED=false" };
+    return;
+  }
+  if (!runtime.baseUrl) {
+    yield { delta: localReply(character, userText), done: true, content: localReply(character, userText), source: "local", fallbackReason: "LLM endpoint is not configured" };
+    return;
+  }
+  if (runtime.apiKeyRequired && !runtime.apiKey) {
+    yield { delta: localReply(character, userText), done: true, content: localReply(character, userText), source: "local", fallbackReason: "LLM_API_KEY is not configured" };
+    return;
+  }
+
+  const controller = new AbortController();
+  const abortRequest = () => controller.abort();
+  signal?.addEventListener("abort", abortRequest, { once: true });
+  const timeout = setTimeout(() => controller.abort(), runtime.timeoutSeconds * 1000);
+
+  try {
+    const stream = await postJsonStream(`${runtime.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+      timeoutMs: runtime.timeoutSeconds * 1000,
+      signal: controller.signal,
+      headers: {
+        ...(runtime.apiKey ? { Authorization: `Bearer ${runtime.apiKey}` } : {}),
+      },
+      body: {
+        model: runtime.modelName,
+        stream: true,
+        temperature: 0.78,
+        messages: [
+          { role: "system", content: buildSystemPrompt(character, persona, memories, relationshipState) },
+          ...messages.slice(-12).map((message) => ({
+            role: message.role === "assistant" ? "assistant" : "user",
+            content: message.content,
+          })),
+          { role: "user", content: userText },
+        ],
+      },
+    });
+
+    let fullContent = "";
+    let buffer = "";
+
+    for await (const chunk of stream) {
+      if (signal?.aborted) throw createRequestAbortError();
+
+      buffer += chunk.toString("utf8");
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? ""; // Keep incomplete line in buffer
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith("data:")) continue;
+        const data = trimmed.slice(5).trim();
+        if (data === "[DONE]") {
+          yield { delta: "", done: true, content: fullContent, source: "llm", model: runtime.modelName };
+          return;
+        }
+        try {
+          const parsed = JSON.parse(data);
+          const delta = parsed?.choices?.[0]?.delta?.content ?? "";
+          if (delta) {
+            fullContent += delta;
+            yield { delta, done: false, content: fullContent, source: "llm", model: runtime.modelName };
+          }
+        } catch {
+          // Skip malformed SSE lines
+        }
+      }
+    }
+
+    // Stream ended without [DONE] — emit final
+    if (fullContent) {
+      const normalized = normalizeAssistantReply(fullContent, character, userText);
+      yield { delta: "", done: true, content: normalized, source: "llm", model: runtime.modelName };
+    } else {
+      // Empty response — fallback
+      const fallback = localReply(character, userText);
+      yield { delta: fallback, done: true, content: fallback, source: "local", fallbackReason: "LLM returned empty stream" };
+    }
+  } catch (error) {
+    if (signal?.aborted || isAbortError(error)) throw createRequestAbortError();
+    console.error("LLM stream error:", error);
+    // Fallback to local reply
+    const fallback = localReply(character, userText);
+    yield { delta: fallback, done: true, content: fallback, source: "local", fallbackReason: error instanceof Error ? error.message : "LLM stream failed" };
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", abortRequest);
+  }
 }

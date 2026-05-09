@@ -19,10 +19,12 @@
 import { app } from "./app.mjs";
 import { config } from "./config.mjs";
 import { flushStore } from "./store/index.mjs";
+import { startImageJobCleanup, stopImageJobCleanup } from "./services/imageJobCleaner.mjs";
 
 const server = app.listen(config.port, () => {
   console.log(`Persona Chat API listening on ${config.appUrl}`);
   console.log(`Environment: ${config.nodeEnv}`);
+  startImageJobCleanup();
 });
 
 // --- Graceful Shutdown ---
@@ -37,6 +39,9 @@ async function gracefulShutdown(signal) {
   server.close(() => {
     console.log("HTTP server closed.");
   });
+
+  // Stop background services
+  stopImageJobCleanup();
 
   // Wait for pending store writes to complete
   try {
