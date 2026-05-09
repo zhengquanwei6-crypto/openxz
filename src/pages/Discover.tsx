@@ -37,21 +37,8 @@ export function DiscoverPage() {
 
   const allTags = ["全部", ...new Set(characters.flatMap((c) => c.tags))];
 
-  const handleSelect = async (characterId: string) => {
-    // Create conversation and navigate to chat
-    try {
-      const conv = await api<{ id: string }>("/api/conversations", {
-        method: "POST",
-        body: { characterId },
-        token,
-      });
-      navigate(`/chat/${conv.id}`);
-    } catch {
-      // conversation may already exist
-      const convs = await api<Array<{ id: string; characterId: string }>>("/api/conversations", { token });
-      const existing = convs.find((c) => c.characterId === characterId);
-      if (existing) navigate(`/chat/${existing.id}`);
-    }
+  const handleSelect = (characterId: string) => {
+    navigate(`/character/${characterId}`);
   };
 
   const handleFavorite = async (id: string) => {

@@ -6,6 +6,11 @@ import { ChatListPage } from "./pages/ChatList";
 import { ChatPage } from "./pages/Chat";
 import { SettingsPage } from "./pages/Settings";
 import { LoginPage } from "./pages/Login";
+import { CharacterDetailPage } from "./pages/CharacterDetail";
+import { MemoriesPage } from "./pages/Memories";
+import { PersonaEditorPage } from "./pages/PersonaEditor";
+import { RelationshipStatusPage } from "./pages/RelationshipStatus";
+import { PrivacyPage, TermsPage } from "./pages/Privacy";
 
 export function App() {
   return (
@@ -20,6 +25,12 @@ export function App() {
             <Route path="/settings" element={<SettingsPage />} />
           </Route>
           <Route path="/chat/:conversationId" element={<ChatPage />} />
+          <Route path="/character/:characterId" element={<CharacterDetailPage />} />
+          <Route path="/memories" element={<MemoriesPage />} />
+          <Route path="/persona" element={<PersonaEditorPage />} />
+          <Route path="/relationship/:characterId" element={<RelationshipStatusPage />} />
+          <Route path="/privacy" element={<PrivacyPage />} />
+          <Route path="/terms" element={<TermsPage />} />
         </Routes>
       </BrowserRouter>
     </AuthProvider>
