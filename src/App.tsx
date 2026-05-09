@@ -11,6 +11,7 @@ import { MemoriesPage } from "./pages/Memories";
 import { PersonaEditorPage } from "./pages/PersonaEditor";
 import { RelationshipStatusPage } from "./pages/RelationshipStatus";
 import { PrivacyPage, TermsPage } from "./pages/Privacy";
+import { SubscriptionPage } from "./pages/Subscription";
 
 export function App() {
   return (
@@ -31,6 +32,7 @@ export function App() {
           <Route path="/relationship/:characterId" element={<RelationshipStatusPage />} />
           <Route path="/privacy" element={<PrivacyPage />} />
           <Route path="/terms" element={<TermsPage />} />
+          <Route path="/subscription" element={<SubscriptionPage />} />
         </Routes>
       </BrowserRouter>
     </AuthProvider>

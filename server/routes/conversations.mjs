@@ -4,6 +4,7 @@ import { eq, and, desc } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { requireAuth } from "../middleware/auth.mjs";
 import { llmLimiter } from "../middleware/rateLimiter.mjs";
+import { quotaCheck } from "../middleware/quota.mjs";
 import { db } from "../db/index.mjs";
 import * as schema from "../db/schema.mjs";
 import { callLlm, callLlmStream, getRuntimeModelConfig, shouldBlockLocalLlmFallback, normalizeAssistantReply, isAbortError } from "../services/llm.mjs";
@@ -158,7 +159,7 @@ conversationsRouter.get("/:id/messages", requireAuth, async (req, res) => {
   res.json(msgs);
 });
 
-conversationsRouter.post("/:id/messages", requireAuth, llmLimiter, async (req, res) => {
+conversationsRouter.post("/:id/messages", requireAuth, quotaCheck("message"), llmLimiter, async (req, res) => {
   const body = z.object({ content: z.string().min(1).max(4000) }).parse(req.body);
   const clientAbort = new AbortController();
   req.on("aborted", () => clientAbort.abort());
@@ -213,7 +214,7 @@ conversationsRouter.post("/:id/messages", requireAuth, llmLimiter, async (req, r
   res.json({ userMessage, assistantMessage });
 });
 
-conversationsRouter.post("/:id/messages/stream", requireAuth, llmLimiter, async (req, res) => {
+conversationsRouter.post("/:id/messages/stream", requireAuth, quotaCheck("message"), llmLimiter, async (req, res) => {
   const body = z.object({ content: z.string().min(1).max(4000) }).parse(req.body);
   const clientAbort = new AbortController();
   req.on("aborted", () => clientAbort.abort());

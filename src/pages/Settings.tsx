@@ -1,6 +1,6 @@
 import { useAuth } from "../contexts/AuthContext";
 import { useNavigate } from "react-router-dom";
-import { User, LogOut, Info, Brain, Heart, FileText, Shield } from "lucide-react";
+import { User, LogOut, Info, Brain, Heart, FileText, Shield, Crown } from "lucide-react";
 
 export function SettingsPage() {
   const { user, logout } = useAuth();
@@ -31,6 +31,10 @@ export function SettingsPage() {
 
       {/* Menu Items */}
       <div className="flex flex-col gap-1">
+        <button onClick={() => navigate("/subscription")} className="flex items-center gap-3 px-4 py-3 rounded-lg hover:bg-slate-800/50 transition-colors text-left">
+          <Crown className="w-4 h-4 text-amber-400" />
+          <span className="text-sm text-slate-200">会员订阅</span>
+        </button>
         <button onClick={() => navigate("/memories")} className="flex items-center gap-3 px-4 py-3 rounded-lg hover:bg-slate-800/50 transition-colors text-left">
           <Brain className="w-4 h-4 text-teal-400" />
           <span className="text-sm text-slate-200">记忆管理</span>
