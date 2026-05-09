@@ -26,6 +26,9 @@ import { memoriesRouter } from "./routes/memories.mjs";
 import { feedbackRouter } from "./routes/feedback.mjs";
 import { subscriptionRouter } from "./routes/subscription.mjs";
 import { paymentRouter } from "./routes/payment.mjs";
+import { checkinRouter } from "./routes/checkin.mjs";
+import { achievementsRouter } from "./routes/achievements.mjs";
+import { searchRouter } from "./routes/search.mjs";
 import { adminRouter } from "./routes/admin/index.mjs";
 
 const app = express();
@@ -63,6 +66,9 @@ app.use("/api/memories", memoriesRouter);
 app.use("/api/feedback", feedbackRouter);
 app.use("/api/subscription", subscriptionRouter);
 app.use("/api/payment", paymentRouter);
+app.use("/api/check-in", checkinRouter);
+app.use("/api/achievements", achievementsRouter);
+app.use("/api/search", searchRouter);
 app.use("/api/admin", requireAdmin, adminRouter);
 
 // --- Static Serving ---

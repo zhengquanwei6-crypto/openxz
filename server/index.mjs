@@ -19,11 +19,12 @@
 import { app } from "./app.mjs";
 import { config } from "./config.mjs";
 import { flushStore } from "./store/index.mjs";
-import { initializeDatabase, closeDatabase } from "./db/index.mjs";
+import { initializeDatabase, closeDatabase, initializeV2Tables } from "./db/index.mjs";
 import { startImageJobCleanup, stopImageJobCleanup } from "./services/imageJobCleaner.mjs";
 
 // Initialize SQLite database (creates tables if needed)
 initializeDatabase();
+initializeV2Tables();
 
 const server = app.listen(config.port, () => {
   console.log(`Persona Chat API listening on ${config.appUrl}`);

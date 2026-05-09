@@ -280,3 +280,55 @@ export function closeDatabase() {
 
 // Export raw sqlite for advanced queries
 export { sqlite };
+
+
+// Additional tables for v0.2 features
+export function initializeV2Tables() {
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS check_ins (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      date TEXT NOT NULL,
+      checked_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_checkins_user_date ON check_ins(user_id, date);
+
+    -- FTS5 virtual tables for full-text search
+    CREATE VIRTUAL TABLE IF NOT EXISTS characters_fts USING fts5(
+      id, name, short_bio, profile, tags,
+      content='characters',
+      content_rowid='rowid'
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+      id, content,
+      content='messages',
+      content_rowid='rowid'
+    );
+
+    -- Triggers to keep FTS in sync
+    CREATE TRIGGER IF NOT EXISTS characters_ai AFTER INSERT ON characters BEGIN
+      INSERT INTO characters_fts(id, name, short_bio, profile, tags) VALUES (new.id, new.name, new.short_bio, new.profile, new.tags);
+    END;
+    CREATE TRIGGER IF NOT EXISTS characters_ad AFTER DELETE ON characters BEGIN
+      INSERT INTO characters_fts(characters_fts, id, name, short_bio, profile, tags) VALUES ('delete', old.id, old.name, old.short_bio, old.profile, old.tags);
+    END;
+    CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+      INSERT INTO messages_fts(id, content) VALUES (new.id, new.content);
+    END;
+    CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+      INSERT INTO messages_fts(messages_fts, id, content) VALUES ('delete', old.id, old.content);
+    END;
+  `);
+
+  // Populate FTS from existing data
+  try {
+    const charCount = sqlite.prepare("SELECT COUNT(*) as c FROM characters_fts").get();
+    if (charCount.c === 0) {
+      sqlite.exec(`INSERT INTO characters_fts(id, name, short_bio, profile, tags) SELECT id, name, short_bio, profile, tags FROM characters`);
+      sqlite.exec(`INSERT INTO messages_fts(id, content) SELECT id, content FROM messages`);
+    }
+  } catch { /* FTS already populated or empty */ }
+
+  console.log("[Database] v0.2 tables initialized (check_ins, FTS5)");
+}

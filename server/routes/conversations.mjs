@@ -5,7 +5,7 @@ import { nanoid } from "nanoid";
 import { requireAuth } from "../middleware/auth.mjs";
 import { llmLimiter } from "../middleware/rateLimiter.mjs";
 import { quotaCheck } from "../middleware/quota.mjs";
-import { db } from "../db/index.mjs";
+import { db, sqlite } from "../db/index.mjs";
 import * as schema from "../db/schema.mjs";
 import { callLlm, callLlmStream, getRuntimeModelConfig, shouldBlockLocalLlmFallback, normalizeAssistantReply, isAbortError } from "../services/llm.mjs";
 import { isPublicCharacter } from "./characters.mjs";
@@ -155,8 +155,33 @@ conversationsRouter.delete("/:id", requireAuth, async (req, res) => {
 conversationsRouter.get("/:id/messages", requireAuth, async (req, res) => {
   const conv = getConversation(req.params.id, req.auth.sub);
   if (!conv) return res.status(404).json({ error: "会话不存在" });
-  const msgs = getConversationMessages(conv.id);
-  res.json(msgs);
+  
+  // Cursor-based pagination
+  const limit = Math.min(50, Number(req.query.limit) || 30);
+  const cursor = req.query.cursor ? String(req.query.cursor) : null;
+  
+  let msgs;
+  if (cursor) {
+    msgs = sqlite.prepare(`
+      SELECT * FROM messages WHERE conversation_id = ? AND created_at < ?
+      ORDER BY created_at DESC LIMIT ?
+    `).all(conv.id, cursor, limit + 1);
+  } else {
+    msgs = sqlite.prepare(`
+      SELECT * FROM messages WHERE conversation_id = ?
+      ORDER BY created_at DESC LIMIT ?
+    `).all(conv.id, limit + 1);
+  }
+  
+  const hasMore = msgs.length > limit;
+  if (hasMore) msgs.pop();
+  msgs.reverse(); // Return in chronological order
+  
+  res.json({
+    messages: msgs,
+    hasMore,
+    nextCursor: hasMore ? msgs[0]?.createdAt : null,
+  });
 });
 
 conversationsRouter.post("/:id/messages", requireAuth, quotaCheck("message"), llmLimiter, async (req, res) => {
