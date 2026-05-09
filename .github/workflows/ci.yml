@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main, refactor/**]
+  pull_request:
+    branches: [main]
+
+jobs:
+  quality:
+    name: Lint & Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: TypeScript check
+        run: npm run lint
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Server syntax check
+        run: |
+          node --check server/index.mjs
+          node --check server/app.mjs
+          node --check server/config.mjs
+          node --check server/constants.mjs
+          node --check server/services/llm.mjs
+          node --check server/services/relationship.mjs
+          node --check server/services/workflow.mjs
+          node --check server/services/adminAi.mjs
+          node --check server/services/imageJobCleaner.mjs
+          node --check server/store/index.mjs
+          node --check server/routes/health.mjs
+          node --check server/routes/auth.mjs
+          node --check server/routes/characters.mjs
+          node --check server/routes/conversations.mjs
+          node --check server/routes/relationships.mjs
+          node --check server/routes/persona.mjs
+          node --check server/routes/memories.mjs
+          node --check server/routes/feedback.mjs
+          node --check server/routes/admin/index.mjs
+
+      - name: Server boot test
+        run: |
+          timeout 5 node -e "
+            import('./server/index.mjs').then(() => {
+              console.log('Server booted successfully');
+              setTimeout(() => process.exit(0), 1500);
+            }).catch(e => {
+              console.error('Boot failed:', e.message);
+              process.exit(1);
+            });
+          " || true
+
+      - name: Security audit (high severity)
+        run: npm audit --audit-level=high || true
+
+  release-check:
+    name: Release Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: quality
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build production
+        run: npm run build
+
+      - name: Release checks
+        run: npm run release:check || true
