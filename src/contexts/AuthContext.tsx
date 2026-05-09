@@ -41,9 +41,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           if (savedUser) setUser(JSON.parse(savedUser));
         })
         .catch(() => {
-          localStorage.removeItem("token");
-          localStorage.removeItem("user");
-          setToken(null);
+          // If API unavailable (Vercel-only deploy), keep user logged in with cached data
+          const savedUser = localStorage.getItem("user");
+          if (savedUser) {
+            setUser(JSON.parse(savedUser));
+          } else {
+            localStorage.removeItem("token");
+            localStorage.removeItem("user");
+            setToken(null);
+          }
         })
         .finally(() => setIsLoading(false));
     } else {

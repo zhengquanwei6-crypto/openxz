@@ -3,7 +3,19 @@
   "installCommand": "npm install --ignore-scripts",
   "outputDirectory": "dist",
   "framework": "vite",
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "Access-Control-Allow-Origin", "value": "*" }
+      ]
+    }
+  ],
   "rewrites": [
+    { "source": "/manifest.json", "destination": "/manifest.json" },
+    { "source": "/sw.js", "destination": "/sw.js" },
+    { "source": "/offline.html", "destination": "/offline.html" },
+    { "source": "/favicon.svg", "destination": "/favicon.svg" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
