@@ -1,114 +1,161 @@
 import { Router } from "express";
 import { z } from "zod";
+import { eq, and, desc } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { requireAuth } from "../middleware/auth.mjs";
 import { llmLimiter } from "../middleware/rateLimiter.mjs";
-import { readStore, updateStore } from "../store/index.mjs";
-import { addRelationshipGrowth, ensureRelationshipState, publicRelationshipState } from "../services/relationship.mjs";
+import { db } from "../db/index.mjs";
+import * as schema from "../db/schema.mjs";
 import { callLlm, callLlmStream, getRuntimeModelConfig, shouldBlockLocalLlmFallback, normalizeAssistantReply, isAbortError } from "../services/llm.mjs";
 import { isPublicCharacter } from "./characters.mjs";
 import { ensurePersona } from "./auth.mjs";
-import { timestamp } from "../utils/helpers.mjs";
 import { RELATIONSHIP_GROWTH } from "../constants.mjs";
 
 export const conversationsRouter = Router();
 
-function getOwnedConversation(data, conversationId, userId) {
-  return data.conversations.find((item) => item.id === conversationId && item.userId === userId);
+// --- Helpers ---
+
+function safeJsonParse(value, fallback) {
+  if (!value || typeof value !== "string") return fallback;
+  try { return JSON.parse(value); } catch { return fallback; }
 }
 
-function getConversationCharacter(data, conversation) {
-  return data.characters.find((item) => item.id === conversation?.characterId);
+function deserializeCharacter(row) {
+  if (!row) return null;
+  return {
+    ...row,
+    tags: safeJsonParse(row.tags, []),
+    fixedMemories: safeJsonParse(row.fixedMemories, []),
+    exampleDialogs: safeJsonParse(row.exampleDialogs, []),
+    workflowConfig: safeJsonParse(row.workflowConfig, {}),
+    relationshipConfig: safeJsonParse(row.relationshipConfig, {}),
+    isRecommended: Boolean(row.isRecommended),
+  };
 }
 
-function isPublicConversation(data, conversation) {
-  return isPublicCharacter(getConversationCharacter(data, conversation));
+function getConversation(conversationId, userId) {
+  const conv = db.select().from(schema.conversations)
+    .where(and(eq(schema.conversations.id, conversationId), eq(schema.conversations.userId, userId)))
+    .get();
+  return conv ?? null;
 }
 
-function getOwnedPublicConversation(data, conversationId, userId) {
-  const conversation = getOwnedConversation(data, conversationId, userId);
-  return isPublicConversation(data, conversation) ? conversation : undefined;
+function getCharacterById(characterId) {
+  const row = db.select().from(schema.characters).where(eq(schema.characters.id, characterId)).get();
+  return deserializeCharacter(row);
 }
 
-function publicConversation(data, conversation) {
-  const character = data.characters.find((item) => item.id === conversation.characterId) ?? data.characters[0];
-  return conversation.lastMessage
-    ? { ...conversation, lastMessage: normalizeAssistantReply(conversation.lastMessage, character, "") }
-    : conversation;
+function getConversationMessages(conversationId) {
+  return db.select().from(schema.messages)
+    .where(eq(schema.messages.conversationId, conversationId))
+    .all();
 }
 
-function publicMessagesForConversation(data, conversation) {
-  const character = data.characters.find((item) => item.id === conversation.characterId) ?? data.characters[0];
-  return (data.messages[conversation.id] ?? []).map((message) =>
-    message.role === "assistant"
-      ? { ...message, content: normalizeAssistantReply(message.content, character, "") }
-      : message,
-  );
+// Exported for other routes
+export function getOwnedPublicConversation(data, conversationId, userId) {
+  return getConversation(conversationId, userId);
 }
-
-function syncConversationPreviewFromMessages(data, conversation, fallback = "聊天记录已清空，可以重新开始。") {
-  const visibleMessage = [...(data.messages[conversation.id] ?? [])].reverse().find((message) => message.role !== "system" && String(message.content ?? "").trim());
-  if (visibleMessage) {
-    conversation.lastMessage = String(visibleMessage.content);
-    conversation.updatedAt = visibleMessage.createdAt ?? timestamp();
-    return conversation;
-  }
-  const now = timestamp();
-  conversation.lastMessage = fallback;
-  conversation.summary = fallback;
-  conversation.updatedAt = now;
+export function getConversationCharacter(data, conversation) {
+  return getCharacterById(conversation?.characterId);
+}
+export function isPublicConversation(data, conversation) {
+  const char = getCharacterById(conversation?.characterId);
+  return isPublicCharacter(char);
+}
+export function publicConversation(data, conversation) {
   return conversation;
 }
+export function publicMessagesForConversation(data, conversation) {
+  return getConversationMessages(conversation.id);
+}
 
-// Export shared helpers
-export { getOwnedPublicConversation, getConversationCharacter, isPublicConversation, publicConversation, publicMessagesForConversation };
+// --- Routes ---
 
 conversationsRouter.get("/", requireAuth, async (req, res) => {
-  const data = await readStore();
-  res.json(
-    data.conversations
-      .filter((conversation) => conversation.userId === req.auth.sub && isPublicConversation(data, conversation))
-      .map((conversation) => publicConversation(data, conversation))
-      .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned))),
-  );
+  const convs = db.select().from(schema.conversations)
+    .where(eq(schema.conversations.userId, req.auth.sub))
+    .all();
+
+  // Filter to only public characters and sort
+  const result = convs
+    .filter((conv) => {
+      const char = getCharacterById(conv.characterId);
+      return isPublicCharacter(char);
+    })
+    .sort((a, b) => {
+      if (a.pinned && !b.pinned) return -1;
+      if (!a.pinned && b.pinned) return 1;
+      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+    });
+
+  res.json(result);
 });
 
 conversationsRouter.post("/", requireAuth, async (req, res) => {
   const body = z.object({ characterId: z.string() }).parse(req.body);
-  const result = await updateStore((data) => {
-    const existing = data.conversations.find((item) => item.userId === req.auth.sub && item.characterId === body.characterId);
-    if (existing) return existing;
-    const character = data.characters.find((item) => item.id === body.characterId && isPublicCharacter(item));
-    if (!character) return null;
-    const now = new Date().toISOString();
-    const conversation = { id: `conv-${req.auth.sub}-${character.id}`, userId: req.auth.sub, characterId: character.id, title: character.name, summary: "新的聊天刚刚开始。", lastMessage: character.firstMessage, createdAt: now, updatedAt: now };
-    data.conversations.unshift(conversation);
-    data.messages[conversation.id] = [{ id: `msg-${nanoid(8)}`, conversationId: conversation.id, role: "assistant", content: character.firstMessage, status: "success", createdAt: now }];
-    addRelationshipGrowth(data, { userId: req.auth.sub, characterId: character.id, points: RELATIONSHIP_GROWTH.conversationCreate, type: "daily_chat", title: "第一次进入聊天", detail: `${character.name}和用户建立了关系档案。` });
-    return conversation;
-  });
-  if (!result) return res.status(404).json({ error: "角色不存在" });
-  res.status(201).json(result);
+  const now = new Date().toISOString();
+
+  // Check if conversation already exists
+  const existing = db.select().from(schema.conversations)
+    .where(and(eq(schema.conversations.userId, req.auth.sub), eq(schema.conversations.characterId, body.characterId)))
+    .get();
+  if (existing) return res.json(existing);
+
+  // Check character exists and is public
+  const character = getCharacterById(body.characterId);
+  if (!isPublicCharacter(character)) return res.status(404).json({ error: "角色不存在" });
+
+  // Create conversation
+  const conversation = {
+    id: `conv-${req.auth.sub}-${character.id}`,
+    userId: req.auth.sub,
+    characterId: character.id,
+    title: character.name,
+    summary: "新的聊天刚刚开始。",
+    lastMessage: character.firstMessage || "",
+    pinned: 0,
+    createdAt: now,
+    updatedAt: now,
+  };
+  db.insert(schema.conversations).values(conversation).run();
+
+  // Insert first message
+  if (character.firstMessage) {
+    db.insert(schema.messages).values({
+      id: `msg-${nanoid(8)}`,
+      conversationId: conversation.id,
+      role: "assistant",
+      content: character.firstMessage,
+      status: "success",
+      kind: "text",
+      createdAt: now,
+    }).run();
+  }
+
+  res.status(201).json(conversation);
 });
 
 conversationsRouter.delete("/:id", requireAuth, async (req, res) => {
-  const result = await updateStore((data) => {
-    const conversation = getOwnedPublicConversation(data, req.params.id, req.auth.sub);
-    if (!conversation) return null;
-    data.conversations = data.conversations.filter((item) => item.id !== conversation.id);
-    delete data.messages[conversation.id];
-    if (Array.isArray(data.imageJobs)) data.imageJobs = data.imageJobs.filter((job) => job.conversationId !== conversation.id);
-    return data.conversations.filter((item) => item.userId === req.auth.sub && isPublicConversation(data, item)).map((item) => publicConversation(data, item)).sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)));
-  });
-  if (!result) return res.status(404).json({ error: "会话不存在" });
-  res.json({ conversations: result });
+  const conv = getConversation(req.params.id, req.auth.sub);
+  if (!conv) return res.status(404).json({ error: "会话不存在" });
+
+  // Delete messages first (foreign key)
+  db.delete(schema.messages).where(eq(schema.messages.conversationId, conv.id)).run();
+  // Delete conversation
+  db.delete(schema.conversations).where(eq(schema.conversations.id, conv.id)).run();
+
+  // Return remaining conversations
+  const remaining = db.select().from(schema.conversations)
+    .where(eq(schema.conversations.userId, req.auth.sub))
+    .all();
+  res.json({ conversations: remaining });
 });
 
 conversationsRouter.get("/:id/messages", requireAuth, async (req, res) => {
-  const data = await readStore();
-  const conversation = getOwnedPublicConversation(data, req.params.id, req.auth.sub);
-  if (!conversation) return res.status(404).json({ error: "会话不存在" });
-  res.json(publicMessagesForConversation(data, conversation));
+  const conv = getConversation(req.params.id, req.auth.sub);
+  if (!conv) return res.status(404).json({ error: "会话不存在" });
+  const msgs = getConversationMessages(conv.id);
+  res.json(msgs);
 });
 
 conversationsRouter.post("/:id/messages", requireAuth, llmLimiter, async (req, res) => {
@@ -116,19 +163,31 @@ conversationsRouter.post("/:id/messages", requireAuth, llmLimiter, async (req, r
   const clientAbort = new AbortController();
   req.on("aborted", () => clientAbort.abort());
   res.on("close", () => { if (!res.writableEnded) clientAbort.abort(); });
-  const data = await readStore();
-  const conversation = getOwnedPublicConversation(data, req.params.id, req.auth.sub);
-  if (!conversation) return res.status(404).json({ error: "会话不存在" });
-  const character = getConversationCharacter(data, conversation);
-  const persona = ensurePersona(data, req.auth.sub);
+
+  const conv = getConversation(req.params.id, req.auth.sub);
+  if (!conv) return res.status(404).json({ error: "会话不存在" });
+
+  const character = getCharacterById(conv.characterId);
+  const persona = ensurePersona(null, req.auth.sub);
+  const history = getConversationMessages(conv.id).slice(-12);
   const now = new Date().toISOString();
-  const history = data.messages[conversation.id] ?? [];
-  const userMessage = { id: `msg-${nanoid(8)}`, conversationId: conversation.id, role: "user", content: body.content, status: "success", createdAt: now };
-  const relationshipState = addRelationshipGrowth(data, { userId: req.auth.sub, characterId: character.id, points: RELATIONSHIP_GROWTH.message, type: "daily_chat", title: "发送了一条消息", detail: "一次自然对话让关系继续升温。" }) ?? ensureRelationshipState(data, req.auth.sub, character.id);
+
+  // Get user memories
+  const memRows = db.select().from(schema.memories)
+    .where(eq(schema.memories.userId, req.auth.sub)).all();
+  const memories = memRows.filter((m) => m.enabled);
 
   let replyResult;
   try {
-    replyResult = await callLlm({ character, persona, memories: data.memories.filter((memory) => memory.userId === req.auth.sub), messages: history, userText: body.content, runtimeModelConfig: getRuntimeModelConfig(data), relationshipState, signal: clientAbort.signal });
+    replyResult = await callLlm({
+      character,
+      persona,
+      memories,
+      messages: history,
+      userText: body.content,
+      runtimeModelConfig: getRuntimeModelConfig({}),
+      signal: clientAbort.signal,
+    });
   } catch (error) {
     if (isAbortError(error)) return;
     throw error;
@@ -137,19 +196,21 @@ conversationsRouter.post("/:id/messages", requireAuth, llmLimiter, async (req, r
   if (shouldBlockLocalLlmFallback(replyResult)) {
     return res.status(503).json({ error: "真实 LLM 未返回结果，消息未发送。", source: replyResult.source, fallbackReason: replyResult.fallbackReason });
   }
-  const assistantMessage = { id: `msg-${nanoid(8)}`, conversationId: conversation.id, role: "assistant", content: replyResult.content, status: "success", createdAt: new Date().toISOString() };
-  const saved = await updateStore((nextData) => {
-    const nextConversation = getOwnedPublicConversation(nextData, req.params.id, req.auth.sub);
-    if (!nextConversation) return null;
-    const latestHistory = nextData.messages[nextConversation.id] ?? [];
-    nextData.messages[nextConversation.id] = [...latestHistory, userMessage, assistantMessage];
-    nextConversation.lastMessage = assistantMessage.content;
-    nextConversation.updatedAt = assistantMessage.createdAt;
-    const relationship = addRelationshipGrowth(nextData, { userId: req.auth.sub, characterId: character.id, points: RELATIONSHIP_GROWTH.message, type: "daily_chat", title: "完成一轮对话", detail: "用户消息和角色回应已形成一次完整互动。" });
-    return { userMessage, assistantMessage, relationship: publicRelationshipState(relationship) };
-  });
-  if (!saved) return res.status(404).json({ error: "会话不存在" });
-  res.json(saved);
+
+  // Persist messages
+  const userMessage = { id: `msg-${nanoid(8)}`, conversationId: conv.id, role: "user", content: body.content, status: "success", kind: "text", createdAt: now };
+  const assistantMessage = { id: `msg-${nanoid(8)}`, conversationId: conv.id, role: "assistant", content: replyResult.content, status: "success", kind: "text", createdAt: new Date().toISOString() };
+
+  db.insert(schema.messages).values(userMessage).run();
+  db.insert(schema.messages).values(assistantMessage).run();
+
+  // Update conversation last message
+  db.update(schema.conversations)
+    .set({ lastMessage: assistantMessage.content, updatedAt: assistantMessage.createdAt })
+    .where(eq(schema.conversations.id, conv.id))
+    .run();
+
+  res.json({ userMessage, assistantMessage });
 });
 
 conversationsRouter.post("/:id/messages/stream", requireAuth, llmLimiter, async (req, res) => {
@@ -158,35 +219,37 @@ conversationsRouter.post("/:id/messages/stream", requireAuth, llmLimiter, async 
   req.on("aborted", () => clientAbort.abort());
   res.on("close", () => { if (!res.writableEnded) clientAbort.abort(); });
 
-  const data = await readStore();
-  const conversation = getOwnedPublicConversation(data, req.params.id, req.auth.sub);
-  if (!conversation) return res.status(404).json({ error: "会话不存在" });
-  const character = getConversationCharacter(data, conversation);
-  const persona = ensurePersona(data, req.auth.sub);
-  const history = data.messages[conversation.id] ?? [];
-  const relationshipState = addRelationshipGrowth(data, { userId: req.auth.sub, characterId: character.id, points: RELATIONSHIP_GROWTH.message, type: "daily_chat" }) ?? ensureRelationshipState(data, req.auth.sub, character.id);
+  const conv = getConversation(req.params.id, req.auth.sub);
+  if (!conv) return res.status(404).json({ error: "会话不存在" });
 
-  // Set SSE headers before streaming
+  const character = getCharacterById(conv.characterId);
+  const persona = ensurePersona(null, req.auth.sub);
+  const history = getConversationMessages(conv.id).slice(-12);
+
+  // Get user memories
+  const memRows = db.select().from(schema.memories)
+    .where(eq(schema.memories.userId, req.auth.sub)).all();
+  const memories = memRows.filter((m) => m.enabled);
+
+  // Set SSE headers
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no"); // Disable Nginx buffering
+  res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
 
   let fullContent = "";
   let source = "local";
   let model = undefined;
-  let fallbackReason = undefined;
 
   try {
     const streamGen = callLlmStream({
       character,
       persona,
-      memories: data.memories.filter((memory) => memory.userId === req.auth.sub),
+      memories,
       messages: history,
       userText: body.content,
-      runtimeModelConfig: getRuntimeModelConfig(data),
-      relationshipState,
+      runtimeModelConfig: getRuntimeModelConfig({}),
       signal: clientAbort.signal,
     });
 
@@ -199,12 +262,10 @@ conversationsRouter.post("/:id/messages/stream", requireAuth, llmLimiter, async 
         fullContent = chunk.content;
         source = chunk.source;
         model = chunk.model;
-        fallbackReason = chunk.fallbackReason;
       }
     }
   } catch (error) {
     if (isAbortError(error)) return;
-    // On error, send error event and close
     res.write(`data: ${JSON.stringify({ error: "流式生成中断", done: true })}\n\n`);
     res.end();
     return;
@@ -212,58 +273,58 @@ conversationsRouter.post("/:id/messages/stream", requireAuth, llmLimiter, async 
 
   if (clientAbort.signal.aborted) return;
 
-  // Check fail-closed policy
   if (shouldBlockLocalLlmFallback({ source })) {
-    res.write(`data: ${JSON.stringify({ error: "真实 LLM 未返回结果", done: true, source, fallbackReason })}\n\n`);
+    res.write(`data: ${JSON.stringify({ error: "真实 LLM 未返回结果", done: true, source })}\n\n`);
     res.end();
     return;
   }
 
-  // Send done event
   res.write(`data: ${JSON.stringify({ done: true, source, model })}\n\n`);
   res.end();
 
-  // Persist messages asynchronously after stream completes
+  // Persist messages asynchronously
   if (fullContent) {
     const now = new Date().toISOString();
-    const userMessage = { id: `msg-${nanoid(8)}`, conversationId: conversation.id, role: "user", content: body.content, status: "success", createdAt: now };
-    const assistantMessage = { id: `msg-${nanoid(8)}`, conversationId: conversation.id, role: "assistant", content: fullContent, status: "success", createdAt: new Date().toISOString() };
-    await updateStore((nextData) => {
-      const nextConversation = getOwnedPublicConversation(nextData, req.params.id, req.auth.sub);
-      if (!nextConversation) return null;
-      nextData.messages[nextConversation.id] = [...(nextData.messages[nextConversation.id] ?? []), userMessage, assistantMessage];
-      nextConversation.lastMessage = assistantMessage.content;
-      nextConversation.updatedAt = assistantMessage.createdAt;
-      addRelationshipGrowth(nextData, { userId: req.auth.sub, characterId: character.id, points: RELATIONSHIP_GROWTH.message, type: "daily_chat" });
-      return assistantMessage;
-    }).catch((err) => console.error("Failed to persist stream messages:", err));
+    const userMessage = { id: `msg-${nanoid(8)}`, conversationId: conv.id, role: "user", content: body.content, status: "success", kind: "text", createdAt: now };
+    const assistantMessage = { id: `msg-${nanoid(8)}`, conversationId: conv.id, role: "assistant", content: fullContent, status: "success", kind: "text", createdAt: new Date().toISOString() };
+
+    try {
+      db.insert(schema.messages).values(userMessage).run();
+      db.insert(schema.messages).values(assistantMessage).run();
+      db.update(schema.conversations)
+        .set({ lastMessage: assistantMessage.content, updatedAt: assistantMessage.createdAt })
+        .where(eq(schema.conversations.id, conv.id))
+        .run();
+    } catch (err) {
+      console.error("Failed to persist stream messages:", err);
+    }
   }
 });
 
 conversationsRouter.delete("/:id/messages/:messageId", requireAuth, async (req, res) => {
-  const result = await updateStore((data) => {
-    const conversation = getOwnedPublicConversation(data, req.params.id, req.auth.sub);
-    if (!conversation) return null;
-    const messages = data.messages[conversation.id] ?? [];
-    const nextMessages = messages.filter((message) => message.id !== req.params.messageId);
-    if (nextMessages.length === messages.length) return { missing: true };
-    data.messages[conversation.id] = nextMessages;
-    syncConversationPreviewFromMessages(data, conversation);
-    return { conversation: publicConversation(data, conversation), messages: publicMessagesForConversation(data, conversation) };
-  });
-  if (!result) return res.status(404).json({ error: "会话不存在" });
-  if (result.missing) return res.status(404).json({ error: "消息不存在" });
-  res.json(result);
+  const conv = getConversation(req.params.id, req.auth.sub);
+  if (!conv) return res.status(404).json({ error: "会话不存在" });
+
+  const msg = db.select().from(schema.messages)
+    .where(and(eq(schema.messages.id, req.params.messageId), eq(schema.messages.conversationId, conv.id)))
+    .get();
+  if (!msg) return res.status(404).json({ error: "消息不存在" });
+
+  db.delete(schema.messages).where(eq(schema.messages.id, req.params.messageId)).run();
+
+  const remaining = getConversationMessages(conv.id);
+  res.json({ conversation: conv, messages: remaining });
 });
 
 conversationsRouter.post("/:id/clear", requireAuth, async (req, res) => {
-  const result = await updateStore((data) => {
-    const conversation = getOwnedPublicConversation(data, req.params.id, req.auth.sub);
-    if (!conversation) return null;
-    data.messages[conversation.id] = [];
-    syncConversationPreviewFromMessages(data, conversation);
-    return { conversation: publicConversation(data, conversation), messages: [] };
-  });
-  if (!result) return res.status(404).json({ error: "会话不存在" });
-  res.json(result);
+  const conv = getConversation(req.params.id, req.auth.sub);
+  if (!conv) return res.status(404).json({ error: "会话不存在" });
+
+  db.delete(schema.messages).where(eq(schema.messages.conversationId, conv.id)).run();
+  db.update(schema.conversations)
+    .set({ lastMessage: "聊天记录已清空，可以重新开始。", updatedAt: new Date().toISOString() })
+    .where(eq(schema.conversations.id, conv.id))
+    .run();
+
+  res.json({ conversation: conv, messages: [] });
 });

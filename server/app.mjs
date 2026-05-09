@@ -24,6 +24,7 @@ import { relationshipsRouter } from "./routes/relationships.mjs";
 import { personaRouter } from "./routes/persona.mjs";
 import { memoriesRouter } from "./routes/memories.mjs";
 import { feedbackRouter } from "./routes/feedback.mjs";
+import { subscriptionRouter } from "./routes/subscription.mjs";
 import { adminRouter } from "./routes/admin/index.mjs";
 
 const app = express();
@@ -59,6 +60,7 @@ app.use("/api/relationships", relationshipsRouter);
 app.use("/api/persona", personaRouter);
 app.use("/api/memories", memoriesRouter);
 app.use("/api/feedback", feedbackRouter);
+app.use("/api/subscription", subscriptionRouter);
 app.use("/api/admin", requireAdmin, adminRouter);
 
 // --- Static Serving ---
