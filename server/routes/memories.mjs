@@ -1,16 +1,26 @@
 import { Router } from "express";
 import { z } from "zod";
+import { eq, and } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { requireAuth } from "../middleware/auth.mjs";
-import { readStore, updateStore } from "../store/index.mjs";
-import { addRelationshipGrowth } from "../services/relationship.mjs";
-import { RELATIONSHIP_GROWTH } from "../constants.mjs";
+import { db } from "../db/index.mjs";
+import * as schema from "../db/schema.mjs";
 
 export const memoriesRouter = Router();
 
+function deserializeMemory(row) {
+  return {
+    ...row,
+    enabled: Boolean(row.enabled),
+    influenceRelationship: Boolean(row.influenceRelationship),
+  };
+}
+
 memoriesRouter.get("/", requireAuth, async (req, res) => {
-  const data = await readStore();
-  res.json(data.memories.filter((memory) => memory.userId === req.auth.sub));
+  const rows = db.select().from(schema.memories)
+    .where(eq(schema.memories.userId, req.auth.sub))
+    .all();
+  res.json(rows.map(deserializeMemory));
 });
 
 memoriesRouter.post("/", requireAuth, async (req, res) => {
@@ -21,35 +31,45 @@ memoriesRouter.post("/", requireAuth, async (req, res) => {
     influenceRelationship: z.boolean().optional(),
     sourceConversationId: z.string().optional(),
   }).parse(req.body);
-  const result = await updateStore((data) => {
-    const now = new Date().toISOString();
-    const memory = { id: `mem-${nanoid(8)}`, userId: req.auth.sub, enabled: true, influenceRelationship: true, createdAt: now, updatedAt: now, ...body };
-    data.memories.unshift(memory);
-    if (memory.characterId && memory.influenceRelationship !== false) {
-      addRelationshipGrowth(data, { userId: req.auth.sub, characterId: memory.characterId, points: RELATIONSHIP_GROWTH.memory, type: "memory", title: "保存为长期记忆", detail: "这条记忆会影响后续称呼、问候或话题建议。" });
-    }
-    return memory;
-  });
-  res.status(201).json(result);
+
+  const now = new Date().toISOString();
+  const memory = {
+    id: `mem-${nanoid(8)}`,
+    userId: req.auth.sub,
+    characterId: body.characterId ?? null,
+    content: body.content,
+    type: body.type,
+    enabled: 1,
+    influenceRelationship: body.influenceRelationship !== false ? 1 : 0,
+    sourceConversationId: body.sourceConversationId ?? null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  db.insert(schema.memories).values(memory).run();
+  res.status(201).json(deserializeMemory(memory));
 });
 
 memoriesRouter.patch("/:id", requireAuth, async (req, res) => {
-  const result = await updateStore((data) => {
-    const memory = data.memories.find((item) => item.id === req.params.id && item.userId === req.auth.sub);
-    if (!memory) return null;
-    Object.assign(memory, req.body, { id: memory.id, userId: req.auth.sub, updatedAt: new Date().toISOString() });
-    if (memory.characterId && memory.enabled && memory.influenceRelationship !== false) {
-      addRelationshipGrowth(data, { userId: req.auth.sub, characterId: memory.characterId, points: 4, type: "memory", title: "更新了记忆", detail: "用户调整了这条长期记忆的内容或影响范围。" });
-    }
-    return memory;
-  });
-  if (!result) return res.status(404).json({ error: "记忆不存在" });
-  res.json(result);
+  const existing = db.select().from(schema.memories)
+    .where(and(eq(schema.memories.id, req.params.id), eq(schema.memories.userId, req.auth.sub)))
+    .get();
+  if (!existing) return res.status(404).json({ error: "记忆不存在" });
+
+  const body = req.body ?? {};
+  const updates = { updatedAt: new Date().toISOString() };
+  if (body.content !== undefined) updates.content = body.content;
+  if (body.enabled !== undefined) updates.enabled = body.enabled ? 1 : 0;
+  if (body.type !== undefined) updates.type = body.type;
+  if (body.influenceRelationship !== undefined) updates.influenceRelationship = body.influenceRelationship ? 1 : 0;
+
+  db.update(schema.memories).set(updates).where(eq(schema.memories.id, req.params.id)).run();
+  const updated = db.select().from(schema.memories).where(eq(schema.memories.id, req.params.id)).get();
+  res.json(deserializeMemory(updated));
 });
 
 memoriesRouter.delete("/:id", requireAuth, async (req, res) => {
-  await updateStore((data) => {
-    data.memories = data.memories.filter((item) => item.id !== req.params.id || item.userId !== req.auth.sub);
-  });
+  db.delete(schema.memories)
+    .where(and(eq(schema.memories.id, req.params.id), eq(schema.memories.userId, req.auth.sub)))
+    .run();
   res.status(204).end();
 });

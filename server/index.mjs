@@ -19,7 +19,11 @@
 import { app } from "./app.mjs";
 import { config } from "./config.mjs";
 import { flushStore } from "./store/index.mjs";
+import { initializeDatabase, closeDatabase } from "./db/index.mjs";
 import { startImageJobCleanup, stopImageJobCleanup } from "./services/imageJobCleaner.mjs";
+
+// Initialize SQLite database (creates tables if needed)
+initializeDatabase();
 
 const server = app.listen(config.port, () => {
   console.log(`Persona Chat API listening on ${config.appUrl}`);
@@ -43,7 +47,10 @@ async function gracefulShutdown(signal) {
   // Stop background services
   stopImageJobCleanup();
 
-  // Wait for pending store writes to complete
+  // Close database connection
+  closeDatabase();
+
+  // Wait for pending store writes to complete (legacy JSON, will be removed)
   try {
     await flushStore();
     console.log("Store writes flushed.");

@@ -1,78 +1,112 @@
 import { Router } from "express";
 import { z } from "zod";
-import { requireAuth } from "../middleware/auth.mjs";
-import { authPayload } from "../middleware/auth.mjs";
+import { eq, and, like } from "drizzle-orm";
+import { requireAuth, authPayload } from "../middleware/auth.mjs";
 import { llmLimiter } from "../middleware/rateLimiter.mjs";
-import { readStore, updateStore } from "../store/index.mjs";
-import { addRelationshipGrowth, ensureRelationshipState } from "../services/relationship.mjs";
+import { db } from "../db/index.mjs";
+import * as schema from "../db/schema.mjs";
 import { callLlm, getRuntimeModelConfig, shouldBlockLocalLlmFallback } from "../services/llm.mjs";
 import { ensurePersona } from "./auth.mjs";
-import { RELATIONSHIP_GROWTH } from "../constants.mjs";
 
 export const charactersRouter = Router();
 
-export function isPublicCharacter(character) {
-  return Boolean(character && character.visibility !== "private" && (character.status ?? "published") === "published");
+// --- Helpers ---
+
+function safeJsonParse(value, fallback) {
+  if (!value || typeof value !== "string") return fallback;
+  try { return JSON.parse(value); } catch { return fallback; }
 }
 
-function replyHistoryForConversation(data, conversationId, userId, userText) {
-  if (!conversationId) return [];
-  const conversation = data.conversations.find((item) => item.id === conversationId && item.userId === userId);
-  if (!conversation) return [];
-  const history = data.messages[conversation.id] ?? [];
-  const lastMessage = history[history.length - 1];
-  if (lastMessage?.role === "user" && lastMessage.content === userText) return history.slice(0, -1);
-  return history;
+function deserializeCharacter(row) {
+  if (!row) return null;
+  return {
+    ...row,
+    exampleDialogs: safeJsonParse(row.exampleDialogs, []),
+    tags: safeJsonParse(row.tags, []),
+    fixedMemories: safeJsonParse(row.fixedMemories, []),
+    workflowConfig: safeJsonParse(row.workflowConfig, {}),
+    relationshipConfig: safeJsonParse(row.relationshipConfig, {}),
+    isRecommended: Boolean(row.isRecommended),
+  };
 }
+
+export function isPublicCharacter(character) {
+  if (!character) return false;
+  return character.visibility !== "private" && (character.status ?? "published") === "published";
+}
+
+function getUserFavoriteIds(userId) {
+  if (!userId) return [];
+  const row = db.select({ favoriteCharacterIds: schema.users.favoriteCharacterIds })
+    .from(schema.users).where(eq(schema.users.id, userId)).get();
+  return safeJsonParse(row?.favoriteCharacterIds, []);
+}
+
+// --- Routes ---
 
 charactersRouter.get("/", async (req, res) => {
-  const data = await readStore();
   const userId = authPayload(req)?.sub;
-  const favoriteIds = userId ? (data.users.find((user) => user.id === userId)?.favoriteCharacterIds ?? []) : [];
+  const favoriteIds = getUserFavoriteIds(userId);
   const keyword = String(req.query.keyword ?? "").trim().toLowerCase();
   const tag = String(req.query.tag ?? "");
-  const result = data.characters.filter((character) => {
-    if (!isPublicCharacter(character)) return false;
-    const tagMatched = !tag || tag === "全部" || character.tags.includes(tag);
-    const keywordMatched = !keyword || [character.name, character.shortBio, character.profile, ...character.tags].join(" ").toLowerCase().includes(keyword);
-    return tagMatched && keywordMatched;
-  });
-  res.json(result.map((character) => ({ ...character, isFavorite: favoriteIds.includes(character.id) || Boolean(character.isFavorite) })));
+
+  let rows = db.select().from(schema.characters)
+    .where(and(
+      eq(schema.characters.visibility, "public"),
+      eq(schema.characters.status, "published"),
+    ))
+    .all();
+
+  let characters = rows.map(deserializeCharacter);
+
+  // Filter by keyword
+  if (keyword) {
+    characters = characters.filter((c) =>
+      [c.name, c.shortBio, c.profile, ...c.tags].join(" ").toLowerCase().includes(keyword)
+    );
+  }
+
+  // Filter by tag
+  if (tag && tag !== "全部") {
+    characters = characters.filter((c) => c.tags.includes(tag));
+  }
+
+  res.json(characters.map((c) => ({
+    ...c,
+    isFavorite: favoriteIds.includes(c.id),
+  })));
 });
 
 charactersRouter.get("/:id", async (req, res) => {
-  const data = await readStore();
   const userId = authPayload(req)?.sub;
-  const favoriteIds = userId ? (data.users.find((user) => user.id === userId)?.favoriteCharacterIds ?? []) : [];
-  const character = data.characters.find((item) => item.id === req.params.id);
+  const favoriteIds = getUserFavoriteIds(userId);
+
+  const row = db.select().from(schema.characters).where(eq(schema.characters.id, req.params.id)).get();
+  const character = deserializeCharacter(row);
   if (!isPublicCharacter(character)) return res.status(404).json({ error: "角色不存在" });
-  res.json({ ...character, isFavorite: favoriteIds.includes(character.id) || Boolean(character.isFavorite) });
+  res.json({ ...character, isFavorite: favoriteIds.includes(character.id) });
 });
 
 charactersRouter.post("/:id/favorite", requireAuth, async (req, res) => {
-  const result = await updateStore((data) => {
-    const character = data.characters.find((item) => item.id === req.params.id);
-    if (!isPublicCharacter(character)) return null;
-    const user = data.users.find((item) => item.id === req.auth.sub);
-    if (!user) return null;
-    user.favoriteCharacterIds = Array.isArray(user.favoriteCharacterIds) ? user.favoriteCharacterIds : [];
-    user.favoriteCharacterIds = user.favoriteCharacterIds.includes(character.id)
-      ? user.favoriteCharacterIds.filter((id) => id !== character.id)
-      : [...user.favoriteCharacterIds, character.id];
-    if (user.favoriteCharacterIds.includes(character.id)) {
-      addRelationshipGrowth(data, {
-        userId: req.auth.sub,
-        characterId: character.id,
-        points: RELATIONSHIP_GROWTH.favorite,
-        type: "favorite",
-        title: "收藏了角色",
-        detail: `${character.name}被加入常聊入口。`,
-      });
-    }
-    return { ...character, isFavorite: user.favoriteCharacterIds.includes(character.id) };
-  });
-  if (!result) return res.status(404).json({ error: "角色不存在" });
-  res.json(result);
+  const row = db.select().from(schema.characters).where(eq(schema.characters.id, req.params.id)).get();
+  const character = deserializeCharacter(row);
+  if (!isPublicCharacter(character)) return res.status(404).json({ error: "角色不存在" });
+
+  const userRow = db.select().from(schema.users).where(eq(schema.users.id, req.auth.sub)).get();
+  if (!userRow) return res.status(404).json({ error: "用户不存在" });
+
+  const favorites = safeJsonParse(userRow.favoriteCharacterIds, []);
+  const isFavorite = favorites.includes(character.id);
+  const newFavorites = isFavorite
+    ? favorites.filter((id) => id !== character.id)
+    : [...favorites, character.id];
+
+  db.update(schema.users)
+    .set({ favoriteCharacterIds: JSON.stringify(newFavorites) })
+    .where(eq(schema.users.id, req.auth.sub))
+    .run();
+
+  res.json({ ...character, isFavorite: !isFavorite });
 });
 
 charactersRouter.post("/:id/reply", requireAuth, llmLimiter, async (req, res) => {
@@ -81,20 +115,37 @@ charactersRouter.post("/:id/reply", requireAuth, llmLimiter, async (req, res) =>
     conversationId: z.string().optional(),
     strict: z.boolean().optional(),
   }).parse(req.body);
-  const data = await readStore();
-  const character = data.characters.find((item) => item.id === req.params.id);
+
+  const row = db.select().from(schema.characters).where(eq(schema.characters.id, req.params.id)).get();
+  const character = deserializeCharacter(row);
   if (!isPublicCharacter(character)) return res.status(404).json({ error: "角色不存在" });
-  const persona = ensurePersona(data, req.auth.sub);
-  const relationshipState = ensureRelationshipState(data, req.auth.sub, character.id);
+
+  const persona = ensurePersona(null, req.auth.sub);
+
+  // Get memories for this user
+  const memRows = db.select().from(schema.memories)
+    .where(eq(schema.memories.userId, req.auth.sub))
+    .all();
+  const memories = memRows.map((m) => ({ ...m, enabled: Boolean(m.enabled) }));
+
+  // Get conversation history if provided
+  let messages = [];
+  if (body.conversationId) {
+    const msgRows = db.select().from(schema.messages)
+      .where(eq(schema.messages.conversationId, body.conversationId))
+      .all();
+    messages = msgRows.slice(-12);
+  }
+
   const replyResult = await callLlm({
     character,
     persona,
-    memories: data.memories.filter((memory) => memory.userId === req.auth.sub),
-    messages: replyHistoryForConversation(data, body.conversationId, req.auth.sub, body.content),
+    memories: memories.filter((m) => m.enabled),
+    messages,
     userText: body.content,
-    runtimeModelConfig: getRuntimeModelConfig(data),
-    relationshipState,
+    runtimeModelConfig: getRuntimeModelConfig({}),
   });
+
   if ((body.strict || shouldBlockLocalLlmFallback(replyResult)) && replyResult.source !== "llm") {
     return res.status(503).json({
       error: "真实 LLM 未返回结果，已阻止使用本地兜底。",
