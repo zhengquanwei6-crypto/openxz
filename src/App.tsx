@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "./contexts/AuthContext";
+import { ToastProvider } from "./components/ui/Toast";
 import { AppLayout } from "./components/layout/AppLayout";
 import { DiscoverPage } from "./pages/Discover";
 import { ChatListPage } from "./pages/ChatList";
@@ -16,6 +17,7 @@ import { SubscriptionPage } from "./pages/Subscription";
 export function App() {
   return (
     <AuthProvider>
+      <ToastProvider>
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
@@ -35,6 +37,7 @@ export function App() {
           <Route path="/subscription" element={<SubscriptionPage />} />
         </Routes>
       </BrowserRouter>
+      </ToastProvider>
     </AuthProvider>
   );
 }
