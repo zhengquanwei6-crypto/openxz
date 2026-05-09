@@ -332,3 +332,45 @@ export function initializeV2Tables() {
 
   console.log("[Database] v0.2 tables initialized (check_ins, FTS5)");
 }
+
+// Additional v0.2 tables for push, invite, preferences
+export function initializeV2ExtraTables() {
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      endpoint TEXT NOT NULL,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id);
+
+    CREATE TABLE IF NOT EXISTS invite_codes (
+      id TEXT PRIMARY KEY,
+      code TEXT NOT NULL UNIQUE,
+      inviter_id TEXT NOT NULL,
+      uses INTEGER DEFAULT 0,
+      max_uses INTEGER DEFAULT 10,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_invite_inviter ON invite_codes(inviter_id);
+
+    CREATE TABLE IF NOT EXISTS invite_redemptions (
+      id TEXT PRIMARY KEY,
+      invite_code_id TEXT NOT NULL,
+      user_id TEXT NOT NULL UNIQUE,
+      redeemed_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS user_preferences (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      key TEXT NOT NULL,
+      model_id TEXT,
+      updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_prefs_user_key ON user_preferences(user_id, key);
+  `);
+  console.log("[Database] v0.2 extra tables initialized (push, invite, preferences)");
+}

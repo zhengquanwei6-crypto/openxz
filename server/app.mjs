@@ -29,6 +29,9 @@ import { paymentRouter } from "./routes/payment.mjs";
 import { checkinRouter } from "./routes/checkin.mjs";
 import { achievementsRouter } from "./routes/achievements.mjs";
 import { searchRouter } from "./routes/search.mjs";
+import { notificationsRouter } from "./routes/notifications.mjs";
+import { modelsRouter } from "./routes/models.mjs";
+import { inviteRouter } from "./routes/invite.mjs";
 import { adminRouter } from "./routes/admin/index.mjs";
 
 const app = express();
@@ -69,6 +72,9 @@ app.use("/api/payment", paymentRouter);
 app.use("/api/check-in", checkinRouter);
 app.use("/api/achievements", achievementsRouter);
 app.use("/api/search", searchRouter);
+app.use("/api/notifications", notificationsRouter);
+app.use("/api/models", modelsRouter);
+app.use("/api/invite", inviteRouter);
 app.use("/api/admin", requireAdmin, adminRouter);
 
 // --- Static Serving ---
