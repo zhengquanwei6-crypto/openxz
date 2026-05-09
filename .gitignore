@@ -40,6 +40,12 @@ yarn-error.log*
 release-report.json
 /tmp/
 
+# server data (SQLite DB, JSON store, logs)
+server/data/
+*.db
+*.db-wal
+*.db-shm
+
 # OS/editor
 .DS_Store
 Thumbs.db
