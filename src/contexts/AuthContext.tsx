@@ -26,6 +26,9 @@ export function useAuth() {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  // Note: localStorage is XSS-accessible. In production with custom domain,
+  // consider migrating to httpOnly cookie-based sessions for stronger security.
+  // Current implementation is acceptable for mobile PWA/Capacitor apps.
   const [token, setToken] = useState<string | null>(() => localStorage.getItem("token"));
   const [isLoading, setIsLoading] = useState(true);
 

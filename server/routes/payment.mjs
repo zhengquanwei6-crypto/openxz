@@ -219,10 +219,16 @@ paymentRouter.post("/create-order", requireAuth, async (req, res) => {
  * WeChat sends XML, but we parse as form/JSON for simplicity
  */
 paymentRouter.post("/notify/wechat", async (req, res) => {
+  // SECURITY: Reject if payment keys are not configured
+  if (!paymentConfig.wechat.apiKey) {
+    console.error("[Payment] WeChat notify rejected: WECHAT_PAY_API_KEY not configured");
+    return res.type("text/xml").send("<xml><return_code><![CDATA[FAIL]]></return_code><return_msg><![CDATA[未配置]]></return_msg></xml>");
+  }
+
   const body = req.body;
 
-  // Verify signature
-  if (paymentConfig.wechat.apiKey && !verifyWechatSignature(body, paymentConfig.wechat.apiKey)) {
+  // Verify signature (always required)
+  if (!verifyWechatSignature(body, paymentConfig.wechat.apiKey)) {
     console.error("[Payment] WeChat signature verification failed");
     return res.type("text/xml").send("<xml><return_code><![CDATA[FAIL]]></return_code><return_msg><![CDATA[签名验证失败]]></return_msg></xml>");
   }
@@ -243,10 +249,16 @@ paymentRouter.post("/notify/wechat", async (req, res) => {
  * Alipay async notification
  */
 paymentRouter.post("/notify/alipay", async (req, res) => {
+  // SECURITY: Reject if payment keys are not configured
+  if (!paymentConfig.alipay.publicKey) {
+    console.error("[Payment] Alipay notify rejected: ALIPAY_PUBLIC_KEY not configured");
+    return res.send("fail");
+  }
+
   const params = req.body;
 
-  // Verify signature
-  if (paymentConfig.alipay.publicKey && !alipayVerifySign(params, paymentConfig.alipay.publicKey)) {
+  // Verify signature (always required)
+  if (!alipayVerifySign(params, paymentConfig.alipay.publicKey)) {
     console.error("[Payment] Alipay signature verification failed");
     return res.send("fail");
   }

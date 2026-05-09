@@ -12,14 +12,20 @@ export function createToken(payload, ttlSeconds = 60 * 60 * 24 * 30) {
 }
 
 export function verifyToken(token) {
-  const [encoded, signature] = String(token ?? "").split(".");
-  if (!encoded || !signature) return null;
-  const expected = crypto.createHmac("sha256", config.sessionSecret).update(encoded).digest("base64url");
-  if (Buffer.byteLength(signature) !== Buffer.byteLength(expected)) return null;
-  if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
-  const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
-  if (!payload.exp || payload.exp < Math.floor(Date.now() / 1000)) return null;
-  return payload;
+  try {
+    const [encoded, signature] = String(token ?? "").split(".");
+    if (!encoded || !signature) return null;
+    const expected = crypto.createHmac("sha256", config.sessionSecret).update(encoded).digest("base64url");
+    if (Buffer.byteLength(signature) !== Buffer.byteLength(expected)) return null;
+    if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
+    const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+    if (!payload || typeof payload !== "object") return null;
+    if (!payload.exp || payload.exp < Math.floor(Date.now() / 1000)) return null;
+    return payload;
+  } catch {
+    // Malformed token (bad base64, invalid JSON, etc.)
+    return null;
+  }
 }
 
 function secretCipherKey() {

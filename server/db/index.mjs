@@ -82,8 +82,8 @@ export function initializeDatabase() {
 
     CREATE TABLE IF NOT EXISTS conversations (
       id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL REFERENCES users(id),
-      character_id TEXT NOT NULL REFERENCES characters(id),
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      character_id TEXT NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
       title TEXT DEFAULT '',
       summary TEXT DEFAULT '',
       last_message TEXT DEFAULT '',
@@ -94,7 +94,7 @@ export function initializeDatabase() {
 
     CREATE TABLE IF NOT EXISTS messages (
       id TEXT PRIMARY KEY,
-      conversation_id TEXT NOT NULL REFERENCES conversations(id),
+      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
       role TEXT NOT NULL,
       content TEXT NOT NULL DEFAULT '',
       status TEXT DEFAULT 'success',
@@ -105,7 +105,7 @@ export function initializeDatabase() {
 
     CREATE TABLE IF NOT EXISTS memories (
       id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL REFERENCES users(id),
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       character_id TEXT,
       content TEXT NOT NULL,
       type TEXT NOT NULL DEFAULT 'fact',

@@ -17,6 +17,15 @@ export class ApiError extends Error {
   }
 }
 
+// Global 401 handler — auto-clears expired token
+function handleAuthExpired() {
+  localStorage.removeItem("token");
+  localStorage.removeItem("user");
+  if (window.location.pathname !== "/login") {
+    window.location.href = "/login";
+  }
+}
+
 export async function api<T = unknown>(path: string, options: RequestOptions = {}): Promise<T> {
   const { method = "GET", body, token, signal } = options;
   const headers: Record<string, string> = { Accept: "application/json" };
@@ -32,6 +41,10 @@ export async function api<T = unknown>(path: string, options: RequestOptions = {
 
   if (!res.ok) {
     const data = await res.json().catch(() => ({ error: res.statusText }));
+    // Auto-handle token expiry
+    if (res.status === 401 && token) {
+      handleAuthExpired();
+    }
     throw new ApiError(res.status, data);
   }
 

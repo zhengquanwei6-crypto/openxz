@@ -51,7 +51,7 @@ const capacitorCorsOrigins = ["https://localhost", "capacitor://localhost", "htt
 
 export const corsOriginValue =
   config.corsOrigin === "*"
-    ? true
+    ? (config.nodeEnv === "production" ? [appOrigin, ...capacitorCorsOrigins] : true)
     : Array.from(
         new Set(
           [
